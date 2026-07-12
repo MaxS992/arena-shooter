@@ -117,13 +117,6 @@ export class FPSMovementController {
     if (this.state === "airborne") {
       if (input.slideJustPressed) this.slideOnLand = true;
 
-      // Double jump
-      if (this.jumpJustPressed && this.jumpsRemaining > 0) {
-        this.velocity.y = t.jumpForce * 0.9; // slightly weaker second jump
-        this.jumpsRemaining--;
-        this.jumpBufferTimer = 0;
-      }
-
       const cos = Math.cos(this.yaw);
       const sin = Math.sin(this.yaw);
       const axAir = (input.moveX * cos - input.moveZ * sin) * t.airAccel * dt * 0.3;
@@ -146,6 +139,7 @@ export class FPSMovementController {
       const wallAir = resolveArenaWalls(this.position.x, this.position.z, PLAYER_RADIUS);
       this.position.x = wallAir.x;
       this.position.z = wallAir.z;
+      const touchingWall = wallAir.normalX !== undefined || wallAir.normalZ !== undefined;
       applyWallVelocitySlide(this.velocity, wallAir);
 
       // Obstacle collision
@@ -153,7 +147,28 @@ export class FPSMovementController {
       this.position.x = obsAir.x;
       this.position.z = obsAir.z;
       this.groundY = obsAir.groundY;
+      const touchingObs = obsAir.normalX !== undefined || obsAir.normalZ !== undefined;
       applyWallVelocitySlide(this.velocity, obsAir);
+
+      // Wall jump: touching wall/obstacle + jump pressed → bounce off
+      const touchingAnySurface = touchingWall || touchingObs;
+      if (this.jumpJustPressed && touchingAnySurface && this.position.y > 0.1) {
+        const wallKickForce = t.jumpForce * 0.85;
+        this.velocity.y = wallKickForce;
+        // Push away from wall
+        const nx = wallAir.normalX ?? obsAir.normalX ?? 0;
+        const nz = wallAir.normalZ ?? obsAir.normalZ ?? 0;
+        if (nx !== 0) this.velocity.x = nx * -8;
+        if (nz !== 0) this.velocity.z = nz * -8;
+        this.jumpsRemaining = MAX_JUMPS - 1; // reset double jump after wall jump
+        this.jumpBufferTimer = 0;
+      }
+      // Double jump (only if not wall jumping)
+      else if (this.jumpJustPressed && this.jumpsRemaining > 0 && !touchingAnySurface) {
+        this.velocity.y = t.jumpForce * 0.85;
+        this.jumpsRemaining--;
+        this.jumpBufferTimer = 0;
+      }
 
       if (nextY <= this.groundY) {
         this.position.y = this.groundY;
