@@ -12,26 +12,27 @@ export class SceneManager {
     const w = canvas.clientWidth || window.innerWidth;
     const h = canvas.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h);
-    this.renderer.setClearColor(0x0a0a1a);
+    this.renderer.setClearColor(0x111122);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.2;
+    this.renderer.toneMapping = THREE.LinearToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
 
-    this.scene.background = new THREE.Color(0x0a0a1a);
-    this.scene.fog = new THREE.FogExp2(0x0a0a1a, 0.008);
+    this.scene.background = new THREE.Color(0x111122);
+    // Light fog — just enough to fade distant walls, not hide bots
+    this.scene.fog = new THREE.Fog(0x111122, 30, 55);
 
-    // Ambient
-    const ambient = new THREE.AmbientLight(0x445577, 0.6);
+    // Strong ambient so nothing is pitch black
+    const ambient = new THREE.AmbientLight(0x8899bb, 1.2);
     this.scene.add(ambient);
 
-    // Hemisphere light for natural fill
-    const hemi = new THREE.HemisphereLight(0x6688cc, 0x223344, 0.4);
+    // Hemisphere: bright sky, dim ground
+    const hemi = new THREE.HemisphereLight(0xaaccff, 0x445566, 0.8);
     this.scene.add(hemi);
 
     // Main directional (sun-like)
-    const dir = new THREE.DirectionalLight(0xffeedd, 1.2);
-    dir.position.set(15, 30, 10);
+    const dir = new THREE.DirectionalLight(0xfff0dd, 1.5);
+    dir.position.set(12, 25, 8);
     dir.castShadow = true;
     dir.shadow.mapSize.set(2048, 2048);
     dir.shadow.camera.left = -25;
@@ -43,41 +44,40 @@ export class SceneManager {
     dir.shadow.bias = -0.001;
     this.scene.add(dir);
 
-    // Fill light
-    const fill = new THREE.DirectionalLight(0x4466aa, 0.3);
-    fill.position.set(-10, 10, -10);
+    // Fill light from opposite side
+    const fill = new THREE.DirectionalLight(0x6688cc, 0.6);
+    fill.position.set(-10, 15, -10);
     this.scene.add(fill);
 
-    // Build arena
     this.buildArena();
   }
 
   private buildArena(): void {
-    // Floor: large grid-textured plane
+    // Floor with visible color
     const floorGeo = new THREE.PlaneGeometry(44, 44);
     const floorMat = new THREE.MeshStandardMaterial({
-      color: 0x1a1a2e,
-      roughness: 0.9,
-      metalness: 0.1,
+      color: 0x2a2a40,
+      roughness: 0.85,
+      metalness: 0.05,
     });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
     this.scene.add(floor);
 
-    // Floor grid lines
-    const gridHelper = new THREE.GridHelper(44, 22, 0x2a2a4a, 0x1e1e3a);
+    // Grid
+    const gridHelper = new THREE.GridHelper(44, 22, 0x3a3a5a, 0x2e2e48);
     gridHelper.position.y = 0.01;
     this.scene.add(gridHelper);
 
-    // Arena walls
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x2a2a4e, roughness: 0.7 });
+    // Arena walls — taller, brighter
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x3a3a5e, roughness: 0.6 });
     const wallH = 6;
     const wallConfigs: [number, number, number, number, number, number][] = [
-      [44, wallH, 0.5, 0, wallH / 2, 22],    // north
-      [44, wallH, 0.5, 0, wallH / 2, -22],   // south
-      [0.5, wallH, 44, 22, wallH / 2, 0],    // east
-      [0.5, wallH, 44, -22, wallH / 2, 0],   // west
+      [44, wallH, 0.5, 0, wallH / 2, 22],
+      [44, wallH, 0.5, 0, wallH / 2, -22],
+      [0.5, wallH, 44, 22, wallH / 2, 0],
+      [0.5, wallH, 44, -22, wallH / 2, 0],
     ];
     for (const [w, h, d, x, y, z] of wallConfigs) {
       const geo = new THREE.BoxGeometry(w, h, d);
@@ -88,68 +88,52 @@ export class SceneManager {
       this.scene.add(wall);
     }
 
-    // Obstacle material
-    const obsMat = new THREE.MeshStandardMaterial({ color: 0x3a3a5e, roughness: 0.6 });
-    const obsMatAccent = new THREE.MeshStandardMaterial({ color: 0x4a3a6e, roughness: 0.5 });
-    const obsMatWarm = new THREE.MeshStandardMaterial({ color: 0x5a3a3e, roughness: 0.5 });
+    // Obstacle materials — brighter, more visible
+    const obsMat = new THREE.MeshStandardMaterial({ color: 0x4a4a6e, roughness: 0.5 });
+    const obsMatAccent = new THREE.MeshStandardMaterial({ color: 0x5a4a7e, roughness: 0.4, metalness: 0.2 });
+    const obsMatWarm = new THREE.MeshStandardMaterial({ color: 0x6a4a4e, roughness: 0.4 });
 
-    // Center structure - cross-shaped cover
+    // Center pillar
     this.addObstacle(new THREE.BoxGeometry(2, 3, 2), obsMat, 0, 1.5, 0);
+    // Center cross walls
     this.addObstacle(new THREE.BoxGeometry(6, 2, 1), obsMat, 0, 1, 0);
     this.addObstacle(new THREE.BoxGeometry(1, 2, 6), obsMat, 0, 1, 0);
 
-    // Corner covers (4 L-shaped)
+    // Corner covers (4 L-shapes)
     for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
       this.addObstacle(new THREE.BoxGeometry(3, 2.5, 1), obsMatAccent, sx * 12, 1.25, sz * 12);
       this.addObstacle(new THREE.BoxGeometry(1, 2.5, 3), obsMatAccent, sx * 13, 1.25, sz * 12);
     }
 
-    // Mid cover boxes
-    this.addObstacle(new THREE.BoxGeometry(4, 1.5, 1.5), obsMatWarm, 8, 0.75, 0);
-    this.addObstacle(new THREE.BoxGeometry(4, 1.5, 1.5), obsMatWarm, -8, 0.75, 0);
-    this.addObstacle(new THREE.BoxGeometry(1.5, 1.5, 4), obsMatWarm, 0, 0.75, 8);
-    this.addObstacle(new THREE.BoxGeometry(1.5, 1.5, 4), obsMatWarm, 0, 0.75, -8);
-
-    // Ramps
-    for (const [x, z, ry] of [[15, 6, 0], [-15, -6, Math.PI], [6, -15, Math.PI / 2], [-6, 15, -Math.PI / 2]] as [number, number, number][]) {
-      const rampGeo = new THREE.BoxGeometry(4, 0.3, 5);
-      const ramp = new THREE.Mesh(rampGeo, obsMat);
-      ramp.position.set(x, 0.8, z);
-      ramp.rotation.set(0.3, ry, 0);
-      ramp.castShadow = true;
-      ramp.receiveShadow = true;
-      this.scene.add(ramp);
-    }
+    // Mid cover boxes — lower so you can shoot over them
+    this.addObstacle(new THREE.BoxGeometry(4, 1.2, 1.2), obsMatWarm, 8, 0.6, 0);
+    this.addObstacle(new THREE.BoxGeometry(4, 1.2, 1.2), obsMatWarm, -8, 0.6, 0);
+    this.addObstacle(new THREE.BoxGeometry(1.2, 1.2, 4), obsMatWarm, 0, 0.6, 8);
+    this.addObstacle(new THREE.BoxGeometry(1.2, 1.2, 4), obsMatWarm, 0, 0.6, -8);
 
     // Elevated platforms
     for (const [x, z] of [[15, 15], [-15, -15]]) {
-      const platGeo = new THREE.BoxGeometry(5, 0.4, 5);
-      const plat = new THREE.Mesh(platGeo, obsMatAccent);
-      plat.position.set(x, 1.6, z);
-      plat.castShadow = true;
-      plat.receiveShadow = true;
-      this.scene.add(plat);
+      this.addObstacle(new THREE.BoxGeometry(5, 0.4, 5), obsMatAccent, x, 0.2, z);
     }
 
-    // Accent lights around arena
-    const lightColors = [0xff4444, 0x44aaff, 0xff44ff, 0x44ffaa];
+    // Accent lights — brighter
+    const lightColors = [0xff4444, 0x4499ff, 0xff44ff, 0x44ffaa];
     for (let i = 0; i < 4; i++) {
       const angle = (i / 4) * Math.PI * 2;
-      const light = new THREE.PointLight(lightColors[i], 0.6, 20);
-      light.position.set(Math.cos(angle) * 16, 3, Math.sin(angle) * 16);
+      const light = new THREE.PointLight(lightColors[i], 1.0, 25);
+      light.position.set(Math.cos(angle) * 16, 3.5, Math.sin(angle) * 16);
       this.scene.add(light);
 
-      // Light source visual
-      const bulbGeo = new THREE.SphereGeometry(0.15, 8, 8);
+      const bulbGeo = new THREE.SphereGeometry(0.2, 8, 8);
       const bulbMat = new THREE.MeshBasicMaterial({ color: lightColors[i] });
       const bulb = new THREE.Mesh(bulbGeo, bulbMat);
       bulb.position.copy(light.position);
       this.scene.add(bulb);
     }
 
-    // Ceiling lights
+    // Ceiling lights — brighter
     for (const [x, z] of [[0, 0], [10, 10], [-10, -10], [10, -10], [-10, 10]]) {
-      const light = new THREE.PointLight(0xffeedd, 0.4, 15);
+      const light = new THREE.PointLight(0xffeedd, 0.8, 20);
       light.position.set(x, 5.5, z);
       this.scene.add(light);
     }
@@ -163,7 +147,6 @@ export class SceneManager {
     this.scene.add(mesh);
     this.obstacles.push(mesh);
 
-    // Register collision AABB
     const params = (geo as THREE.BoxGeometry).parameters;
     if (params) {
       const hw = params.width / 2;

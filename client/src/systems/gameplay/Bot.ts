@@ -54,19 +54,23 @@ export class Bot {
     if (modelTemplate) {
       this.mesh = cloneSkeleton(modelTemplate);
       this.mesh.scale.setScalar(1);
-      // Tint the body material
+      // Clone materials per bot and apply unique tint
       this.mesh.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
           const mesh = child as THREE.Mesh;
           this.raycastMeshes.push(mesh);
           mesh.castShadow = true;
           mesh.receiveShadow = true;
-          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-          for (const mat of mats) {
-            const m = mat as THREE.MeshStandardMaterial;
-            if (m.name === "VanguardBodyMat" || m.name?.toLowerCase().includes("body")) {
-              m.color.setHex(this.tintColor);
-            }
+          // Clone material so each bot has its own
+          if (Array.isArray(mesh.material)) {
+            mesh.material = mesh.material.map(m => {
+              const cloned = m.clone();
+              this.applyTint(cloned as THREE.MeshStandardMaterial);
+              return cloned;
+            });
+          } else {
+            mesh.material = mesh.material.clone();
+            this.applyTint(mesh.material as THREE.MeshStandardMaterial);
           }
         }
       });
@@ -87,6 +91,18 @@ export class Bot {
 
     this.mesh.position.copy(this.position);
     this.pickPatrolTarget();
+  }
+
+  private applyTint(mat: THREE.MeshStandardMaterial): void {
+    if (!mat.color) return;
+    const name = mat.name?.toLowerCase() ?? "";
+    if (name.includes("body") || name === "vanguardbodymat") {
+      // Blend tint with original color instead of replacing
+      const tint = new THREE.Color(this.tintColor);
+      mat.color.lerp(tint, 0.6);
+      mat.emissive.copy(tint);
+      mat.emissiveIntensity = 0.15;
+    }
   }
 
   private createFallbackMesh(): THREE.Group {

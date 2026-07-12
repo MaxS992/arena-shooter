@@ -97,22 +97,23 @@ export function resolveObstacles(
       const pushBack = z - (obs.zMin - r);
       const pushFront = (obs.zMax + r) - z;
 
-      // All should be positive if we're inside
+      // All must be positive if truly inside
       if (pushLeft <= 0 || pushRight <= 0 || pushBack <= 0 || pushFront <= 0) continue;
 
       const min = Math.min(pushLeft, pushRight, pushBack, pushFront);
 
+      // Push out along the axis of least penetration
       if (min === pushLeft) {
-        x = obs.xMin - r;
+        x = obs.xMin - r - 0.01;
         normalX = -1;
       } else if (min === pushRight) {
-        x = obs.xMax + r;
+        x = obs.xMax + r + 0.01;
         normalX = 1;
       } else if (min === pushBack) {
-        z = obs.zMin - r;
+        z = obs.zMin - r - 0.01;
         normalZ = -1;
       } else {
-        z = obs.zMax + r;
+        z = obs.zMax + r + 0.01;
         normalZ = 1;
       }
 
