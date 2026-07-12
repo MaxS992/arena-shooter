@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: arena-shooter
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: cd server && node dist/index.js
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production

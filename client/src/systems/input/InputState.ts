@@ -33,7 +33,7 @@ export const defaultInputState: InputState = {
 const LOCK_KEYS_FOR_BROWSER_SHORTCUTS = ["KeyW", "KeyN", "KeyT"];
 
 /** Block Ctrl+W / Ctrl+N / Ctrl+T in capture phase so tab doesn't close when pointer locked. */
-function installCaptureShortcutBlocker(getPointerLocked: () => boolean): void {
+function installCaptureShortcutBlocker(_getPointerLocked: () => boolean): void {
   document.addEventListener(
     "keydown",
     (e: KeyboardEvent) => {
@@ -64,29 +64,6 @@ export class InputSampler {
     this.state.slideJustPressed = slideNow && !this.slideWasDown;
     this.slideWasDown = slideNow;
     this.state.slide = slideNow;
-    if (this.state.slideJustPressed) {
-      // #region agent log
-      fetch("http://127.0.0.1:7291/ingest/e6ca52ac-ce07-4922-9b3f-cd33fd3e1212", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "485d75",
-        },
-        body: JSON.stringify({
-          sessionId: "485d75",
-          runId: "initial",
-          hypothesisId: "H1",
-          location: "InputState.ts:getState",
-          message: "slideJustPressed",
-          data: {
-            slideNow,
-            sprint: this.state.sprint,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
-    }
     return this.state;
   }
 
@@ -101,9 +78,9 @@ export class InputSampler {
       canvas.requestPointerLock();
       // Keyboard lock must run in same user gesture as pointer lock. Lock ALL keys so browser
       // never sees Ctrl+W (specific keys alone may not capture modifier combos in some browsers).
-      if (navigator.keyboard?.lock) {
-        navigator.keyboard.lock().then(() => {}).catch(() => {
-          navigator.keyboard!.lock(LOCK_KEYS_FOR_BROWSER_SHORTCUTS).catch(() => {});
+      if ((navigator as any).keyboard?.lock) {
+        (navigator as any).keyboard.lock().then(() => {}).catch(() => {
+          (navigator as any).keyboard!.lock(LOCK_KEYS_FOR_BROWSER_SHORTCUTS).catch(() => {});
         });
       }
     });
@@ -114,7 +91,7 @@ export class InputSampler {
         this.keysDown.clear();
         this.slideWasDown = false;
       } else {
-        if (navigator.keyboard?.unlock) navigator.keyboard.unlock();
+        if ((navigator as any).keyboard?.unlock) (navigator as any).keyboard.unlock();
       }
     });
     document.addEventListener("mousemove", (e) => {

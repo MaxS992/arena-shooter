@@ -1,13 +1,13 @@
 /**
- * FPS movement: state machine (grounded / sliding / airborne), sprint, jump, slide, slide jump.
- * Same snapshot interface as DummyMovementController for drop-in use.
+ * FPS movement: state machine (grounded / sliding / airborne), sprint, double jump, slide, slide jump.
+ * Obstacle collision support via resolveObstacles.
  */
 
 import type { Vec3 } from "shared";
 import type { InputState } from "../input/InputState.js";
 import { movementTuning } from "shared";
-import { PLAYER_RADIUS } from "shared";
-import { resolveArenaWalls, applyWallVelocitySlide } from "./arenaCollision.js";
+import { PLAYER_RADIUS, PLAYER_HEIGHT } from "shared";
+import { resolveArenaWalls, resolveObstacles, applyWallVelocitySlide } from "./arenaCollision.js";
 
 export type MovementStateName = "grounded" | "sliding" | "airborne";
 
@@ -18,15 +18,14 @@ export interface MovementSnapshot {
   pitch: number;
   grounded: boolean;
   state: MovementStateName;
-  /** True when crouch-walking (grounded + C) or sliding. */
   crouching: boolean;
 }
 
-/** Ground plane Y in world (1 unit = 1 meter). */
-const GROUND_Y = 0;
+const MAX_JUMPS = 2; // double jump
+const ARENA_LIMIT = 21; // hard clamp so player never leaves arena
 
 export class FPSMovementController {
-  position = { x: 0, y: GROUND_Y, z: 0 };
+  position = { x: 0, y: 0, z: 0 };
   velocity = { x: 0, y: 0, z: 0 };
   yaw = 0;
   pitch = 0;
@@ -35,19 +34,32 @@ export class FPSMovementController {
   private coyoteTimer = 0;
   private jumpBufferTimer = 0;
   private crouching = false;
-  /** Frames left where we can enter slide after pressing C (avoids missing slideJustPressed across ticks). */
   private slideIntentTicks = 0;
-  /** C was pressed in air → enter slide on land without holding C. */
   private slideOnLand = false;
+  private jumpsRemaining = MAX_JUMPS;
+  private jumpJustPressed = false;
+  private jumpWasDown = false;
+  private groundY = 0; // current ground height (can be on top of obstacle)
 
   update(dt: number, input: Readonly<InputState>, _physics: { raycast?: () => boolean }): void {
     const t = movementTuning;
 
-    // Jump buffer & coyote
-    if (input.jump) this.jumpBufferTimer = t.jumpBufferTime;
-    if (this.state === "grounded") this.coyoteTimer = t.coyoteTime;
-    else this.coyoteTimer -= dt;
+    // One-shot jump detection
+    this.jumpJustPressed = input.jump && !this.jumpWasDown;
+    this.jumpWasDown = input.jump;
 
+    // Jump buffer
+    if (this.jumpJustPressed) this.jumpBufferTimer = t.jumpBufferTime;
+
+    // Coyote time
+    if (this.state === "grounded") {
+      this.coyoteTimer = t.coyoteTime;
+      this.jumpsRemaining = MAX_JUMPS;
+    } else {
+      this.coyoteTimer -= dt;
+    }
+
+    // ── SLIDING ─────────────────────────────────────────
     if (this.state === "sliding") {
       this.slideTime += dt;
       const hor = Math.hypot(this.velocity.x, this.velocity.z);
@@ -59,83 +71,59 @@ export class FPSMovementController {
       this.position.x += this.velocity.x * dt;
       this.position.z += this.velocity.z * dt;
       const nextY = this.position.y + this.velocity.y * dt;
-      if (nextY <= GROUND_Y) {
-        this.position.y = GROUND_Y;
+
+      // Resolve collisions
+      const wallResult = resolveArenaWalls(this.position.x, this.position.z, PLAYER_RADIUS);
+      this.position.x = wallResult.x;
+      this.position.z = wallResult.z;
+      applyWallVelocitySlide(this.velocity, wallResult);
+
+      const obsResult = resolveObstacles(this.position.x, nextY, this.position.z, PLAYER_RADIUS, PLAYER_HEIGHT);
+      this.position.x = obsResult.x;
+      this.position.z = obsResult.z;
+      this.groundY = obsResult.groundY;
+      applyWallVelocitySlide(this.velocity, obsResult);
+
+      if (nextY <= this.groundY) {
+        this.position.y = this.groundY;
         this.velocity.y = 0;
       } else {
         this.position.y = nextY;
       }
-      const wall = resolveArenaWalls(this.position.x, this.position.z, PLAYER_RADIUS);
-      this.position.x = wall.x;
-      this.position.z = wall.z;
-      applyWallVelocitySlide(this.velocity, wall);
 
-      // Apex-style: slide runs for duration / until too slow; no need to hold C
-      const stillSliding = hor >= t.slideMinSpeed && this.slideTime < t.slideDurationMax && this.position.y <= GROUND_Y + 0.01;
+      const stillSliding = hor >= t.slideMinSpeed && this.slideTime < t.slideDurationMax && this.position.y <= this.groundY + 0.05;
+
+      // Slide jump
       if (this.jumpBufferTimer > 0 && stillSliding) {
         const mult = t.slideJumpMultiplier;
         this.velocity.y = t.jumpForce * mult;
         this.velocity.x *= mult;
         this.velocity.z *= mult;
         this.jumpBufferTimer = 0;
+        this.jumpsRemaining = MAX_JUMPS - 1;
         this.state = "airborne";
       } else if (!stillSliding) {
-        // #region agent log
-        fetch("http://127.0.0.1:7291/ingest/e6ca52ac-ce07-4922-9b3f-cd33fd3e1212", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Debug-Session-Id": "485d75",
-          },
-          body: JSON.stringify({
-            sessionId: "485d75",
-            runId: "initial",
-            hypothesisId: "H3",
-            location: "FPSMovementController.ts:update",
-            message: "slide_end",
-            data: {
-              slideTime: this.slideTime,
-              hor,
-              posY: this.position.y,
-            },
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
-        // End slide: go to grounded (velocity kept → friction slows to stop; W = walk/crouch speed)
-        if (this.position.y <= GROUND_Y + 0.01) this.state = "grounded";
-        else this.state = "airborne";
+        this.state = this.position.y <= this.groundY + 0.05 ? "grounded" : "airborne";
       }
+
       this.yaw = input.yaw;
       this.pitch = input.pitch;
       this.crouching = true;
+      this.clampArena();
       return;
     }
 
+    // ── AIRBORNE ────────────────────────────────────────
     if (this.state === "airborne") {
-      if (input.slideJustPressed) {
-        this.slideOnLand = true;
-        // #region agent log
-        fetch("http://127.0.0.1:7291/ingest/e6ca52ac-ce07-4922-9b3f-cd33fd3e1212", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Debug-Session-Id": "485d75",
-          },
-          body: JSON.stringify({
-            sessionId: "485d75",
-            runId: "initial",
-            hypothesisId: "H2",
-            location: "FPSMovementController.ts:update",
-            message: "slideOnLand_set",
-            data: {
-              velocity: { x: this.velocity.x, y: this.velocity.y, z: this.velocity.z },
-            },
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
+      if (input.slideJustPressed) this.slideOnLand = true;
+
+      // Double jump
+      if (this.jumpJustPressed && this.jumpsRemaining > 0) {
+        this.velocity.y = t.jumpForce * 0.9; // slightly weaker second jump
+        this.jumpsRemaining--;
+        this.jumpBufferTimer = 0;
       }
+
       const cos = Math.cos(this.yaw);
       const sin = Math.sin(this.yaw);
       const axAir = (input.moveX * cos - input.moveZ * sin) * t.airAccel * dt * 0.3;
@@ -153,11 +141,24 @@ export class FPSMovementController {
       this.position.x += this.velocity.x * dt;
       this.position.z += this.velocity.z * dt;
       const nextY = this.position.y + this.velocity.y * dt;
-      if (nextY <= GROUND_Y) {
-        this.position.y = GROUND_Y;
+
+      // Wall collision
+      const wallAir = resolveArenaWalls(this.position.x, this.position.z, PLAYER_RADIUS);
+      this.position.x = wallAir.x;
+      this.position.z = wallAir.z;
+      applyWallVelocitySlide(this.velocity, wallAir);
+
+      // Obstacle collision
+      const obsAir = resolveObstacles(this.position.x, nextY, this.position.z, PLAYER_RADIUS, PLAYER_HEIGHT);
+      this.position.x = obsAir.x;
+      this.position.z = obsAir.z;
+      this.groundY = obsAir.groundY;
+      applyWallVelocitySlide(this.velocity, obsAir);
+
+      if (nextY <= this.groundY) {
+        this.position.y = this.groundY;
         this.velocity.y = 0;
         const horLand = Math.hypot(this.velocity.x, this.velocity.z);
-        // Air slide: C pressed in air → slide on land (no need to hold C)
         if (this.slideOnLand && horLand >= t.slideEnterSpeed) {
           this.state = "sliding";
           this.slideTime = 0;
@@ -167,26 +168,6 @@ export class FPSMovementController {
             this.velocity.x = (this.velocity.x / horLand) * boost;
             this.velocity.z = (this.velocity.z / horLand) * boost;
           }
-          // #region agent log
-          fetch("http://127.0.0.1:7291/ingest/e6ca52ac-ce07-4922-9b3f-cd33fd3e1212", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Debug-Session-Id": "485d75",
-            },
-            body: JSON.stringify({
-              sessionId: "485d75",
-              runId: "initial",
-              hypothesisId: "H2",
-              location: "FPSMovementController.ts:update",
-              message: "enter_slide_air",
-              data: {
-                horLand,
-              },
-              timestamp: Date.now(),
-            }),
-          }).catch(() => {});
-          // #endregion
         } else {
           this.state = "grounded";
         }
@@ -194,18 +175,18 @@ export class FPSMovementController {
       } else {
         this.position.y = nextY;
       }
-      const wallAir = resolveArenaWalls(this.position.x, this.position.z, PLAYER_RADIUS);
-      this.position.x = wallAir.x;
-      this.position.z = wallAir.z;
-      applyWallVelocitySlide(this.velocity, wallAir);
+
       this.yaw = input.yaw;
       this.pitch = input.pitch;
       this.jumpBufferTimer -= dt;
       this.crouching = this.state === "sliding";
+      this.clampArena();
       return;
     }
 
-    // Slide intent: C pressed sets a short buffer so we don't miss slide entry across ticks; once in slide, no need to hold C
+    // ── GROUNDED ────────────────────────────────────────
+
+    // Slide entry
     if (input.slideJustPressed) this.slideIntentTicks = 8;
     const horSpeed = Math.hypot(this.velocity.x, this.velocity.z);
     if (this.slideIntentTicks > 0 && input.sprint && horSpeed >= t.slideEnterSpeed) {
@@ -219,40 +200,14 @@ export class FPSMovementController {
         this.velocity.x = (this.velocity.x / hor) * boost;
         this.velocity.z = (this.velocity.z / hor) * boost;
       }
-      // #region agent log
-      fetch("http://127.0.0.1:7291/ingest/e6ca52ac-ce07-4922-9b3f-cd33fd3e1212", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "485d75",
-        },
-        body: JSON.stringify({
-          sessionId: "485d75",
-          runId: "initial",
-          hypothesisId: "H1",
-          location: "FPSMovementController.ts:update",
-          message: "enter_slide_ground",
-          data: {
-            horSpeed,
-            slideIntentTicks: this.slideIntentTicks,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       return;
     }
     if (this.slideIntentTicks > 0) this.slideIntentTicks--;
 
-    // Sprint takes precedence so "Sprint: true" always means higher velocity. Else crouch or walk.
-    const speed = input.sprint
-      ? t.maxSpeedSprint
-      : input.slide
-        ? t.maxSpeedCrouch
-        : t.maxSpeedWalk;
+    // Movement
+    const speed = input.sprint ? t.maxSpeedSprint : input.slide ? t.maxSpeedCrouch : t.maxSpeedWalk;
     const cos = Math.cos(this.yaw);
     const sin = Math.sin(this.yaw);
-    // Higher accel when sprinting so equilibrium speed reaches maxSpeedSprint (same friction => need more accel to reach higher cap)
     const accel = input.sprint ? t.accel * (t.maxSpeedSprint / t.maxSpeedWalk) : t.accel;
     const ax = (input.moveX * cos - input.moveZ * sin) * accel * dt;
     const az = (-input.moveX * sin - input.moveZ * cos) * accel * dt;
@@ -266,9 +221,11 @@ export class FPSMovementController {
       this.velocity.z *= speed / hor;
     }
 
-    if (this.jumpBufferTimer > 0 || (input.jump && this.coyoteTimer > 0)) {
+    // Jump
+    if (this.jumpBufferTimer > 0 || (this.jumpJustPressed && this.coyoteTimer > 0)) {
       this.velocity.y = t.jumpForce;
       this.state = "airborne";
+      this.jumpsRemaining = MAX_JUMPS - 1;
       this.jumpBufferTimer = 0;
     } else {
       this.velocity.y -= t.gravity * dt;
@@ -278,23 +235,42 @@ export class FPSMovementController {
     this.position.x += this.velocity.x * dt;
     this.position.z += this.velocity.z * dt;
     const nextY = this.position.y + this.velocity.y * dt;
-    if (nextY <= GROUND_Y) {
-      this.position.y = GROUND_Y;
+
+    // Wall collision
+    const wallGnd = resolveArenaWalls(this.position.x, this.position.z, PLAYER_RADIUS);
+    this.position.x = wallGnd.x;
+    this.position.z = wallGnd.z;
+    applyWallVelocitySlide(this.velocity, wallGnd);
+
+    // Obstacle collision
+    const obsGnd = resolveObstacles(this.position.x, nextY, this.position.z, PLAYER_RADIUS, PLAYER_HEIGHT);
+    this.position.x = obsGnd.x;
+    this.position.z = obsGnd.z;
+    this.groundY = obsGnd.groundY;
+    applyWallVelocitySlide(this.velocity, obsGnd);
+
+    if (nextY <= this.groundY) {
+      this.position.y = this.groundY;
       this.velocity.y = 0;
       this.state = "grounded";
     } else {
       this.position.y = nextY;
       this.state = "airborne";
     }
-    const wallGnd = resolveArenaWalls(this.position.x, this.position.z, PLAYER_RADIUS);
-    this.position.x = wallGnd.x;
-    this.position.z = wallGnd.z;
-    applyWallVelocitySlide(this.velocity, wallGnd);
 
     this.yaw = input.yaw;
     this.pitch = input.pitch;
     this.jumpBufferTimer -= dt;
     this.crouching = input.slide;
+    this.clampArena();
+  }
+
+  /** Hard clamp to arena bounds — safety net after all collision. */
+  private clampArena(): void {
+    if (this.position.x > ARENA_LIMIT) { this.position.x = ARENA_LIMIT; this.velocity.x = Math.min(0, this.velocity.x); }
+    if (this.position.x < -ARENA_LIMIT) { this.position.x = -ARENA_LIMIT; this.velocity.x = Math.max(0, this.velocity.x); }
+    if (this.position.z > ARENA_LIMIT) { this.position.z = ARENA_LIMIT; this.velocity.z = Math.min(0, this.velocity.z); }
+    if (this.position.z < -ARENA_LIMIT) { this.position.z = -ARENA_LIMIT; this.velocity.z = Math.max(0, this.velocity.z); }
   }
 
   getSnapshot(): MovementSnapshot {
